@@ -1065,7 +1065,46 @@ async def api_setup_actions(request: Request):
                 f'<div class="toast toast-error">Failed to set secret: HTTP {secret_resp.status_code}</div>'
             )
 
-        # Trigger initial backfill sync via repository_dispatch
+        # c) Create sync.yml workflow if it doesn't exist
+        from base64 import b64encode as _b64
+        sync_yml = (
+            "name: Sync Workouts\n\n"
+            "on:\n"
+            "  schedule:\n"
+            "    - cron: '0 */2 * * *'\n"
+            "  workflow_dispatch: {}\n"
+            "  repository_dispatch:\n"
+            "    types: [sync-trigger]\n\n"
+            "concurrency:\n"
+            "  group: sync\n"
+            "  cancel-in-progress: false\n\n"
+            "jobs:\n"
+            "  sync:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    timeout-minutes: 30\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@v4\n"
+            "      - uses: actions/setup-python@v5\n"
+            "        with:\n"
+            "          python-version: '3.12'\n"
+            "      - name: Install\n"
+            "        run: pip install \".[cloud]\"\n"
+            "      - name: Sync\n"
+            "        env:\n"
+            "          DATABASE_URL: ${{ secrets.DATABASE_URL }}\n"
+            "        run: hevy2garmin sync\n"
+        )
+        wf_path = f"https://api.github.com/repos/{owner}/{repo}/contents/.github/workflows/sync.yml"
+        existing_wf = req.get(wf_path, headers=headers, timeout=10)
+        wf_data = {
+            "message": "feat: add auto-sync workflow",
+            "content": _b64(sync_yml.encode()).decode(),
+        }
+        if existing_wf.status_code == 200:
+            wf_data["sha"] = existing_wf.json().get("sha")
+        req.put(wf_path, headers=headers, json=wf_data, timeout=10)
+
+        # d) Trigger initial sync
         try:
             req.post(
                 f"https://api.github.com/repos/{owner}/{repo}/dispatches",
@@ -1073,13 +1112,12 @@ async def api_setup_actions(request: Request):
                 json={"event_type": "sync-trigger"},
                 timeout=10,
             )
-            return HTMLResponse(
-                '<div class="toast toast-success">Auto-sync enabled! Initial sync triggered. Your workouts will appear on Garmin within a few minutes.</div>'
-            )
         except Exception:
-            return HTMLResponse(
-                '<div class="toast toast-success">Auto-sync enabled! Workouts will sync every 2 hours. Click Sync Now for an immediate sync.</div>'
-            )
+            pass
+
+        return HTMLResponse(
+            '<div class="toast toast-success">Auto-sync enabled! Workouts will sync every 2 hours.</div>'
+        )
     except Exception as e:
         return HTMLResponse(f'<div class="toast toast-error">Failed to set up auto-sync: {e}</div>')
 

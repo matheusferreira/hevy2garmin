@@ -74,20 +74,22 @@ def upload_fit(client: Garmin, fit_path: str | Path, workout_start: str | None =
     upload_id = None
     activity_id = None
 
+    logger.info("  Upload response type=%s", type(resp).__name__)
     if isinstance(resp, dict):
         detail = resp.get("detailedImportResult", {})
         upload_id = detail.get("uploadId")
-        # Some versions return activity ID directly
         successes = detail.get("successes", [])
         if successes and isinstance(successes, list):
             activity_id = successes[0].get("internalId")
         failures = detail.get("failures", [])
         if failures:
-            logger.warning("  Upload had failures: %s", failures)
+            logger.warning("  Upload failures: %s", failures)
+        logger.info("  Upload result: upload_id=%s activity_id=%s", upload_id, activity_id)
+    else:
+        logger.info("  Upload response: %s", str(resp)[:200])
 
-    # Wait briefly for Garmin to process, then find the activity
-    if upload_id and not activity_id:
-        logger.info("  Upload accepted (uploadId=%s), finding activity...", upload_id)
+    # Always wait and try to find the activity for renaming
+    if not activity_id:
         time.sleep(3)
         if workout_start:
             activity_id = find_activity_by_start_time(client, workout_start)
@@ -98,8 +100,8 @@ def upload_fit(client: Garmin, fit_path: str | Path, workout_start: str | None =
                     activity_id = activities[0].get("activityId")
             except Exception as e:
                 logger.warning("  Could not find uploaded activity: %s", e)
-        if activity_id:
-            logger.info("  Found activity %s", activity_id)
+    if activity_id:
+        logger.info("  Found activity %s", activity_id)
 
     return {"upload_id": upload_id, "activity_id": activity_id}
 
