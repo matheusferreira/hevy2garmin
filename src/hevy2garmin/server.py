@@ -1109,7 +1109,7 @@ async def api_sync_one(request: Request):
                         avg_hr=result.get("avg_hr"),
                     )
                     remaining = hevy.get_workout_count() - db.get_synced_count()
-                    return JSONResponse({"synced": 1, "title": unsynced["title"] + " (already on Garmin)", "remaining": max(0, remaining), "done": remaining <= 0})
+                    return JSONResponse({"synced": 1, "skipped_duplicate": True, "title": unsynced["title"], "remaining": max(0, remaining), "done": remaining <= 0})
                 raise  # Re-raise non-duplicate errors
 
             aid = upload_result.get("activity_id")
