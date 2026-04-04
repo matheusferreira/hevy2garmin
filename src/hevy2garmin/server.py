@@ -148,6 +148,23 @@ def _get_autosync_status() -> dict[str, Any]:
     enabled = auto_cfg.get("enabled", False)
     interval = auto_cfg.get("interval_minutes", 30)
 
+    # On cloud, read persisted state from DB (filesystem config doesn't persist)
+    if db.get_database_url():
+        try:
+            import json as _json
+            _db = db.get_db()
+            if hasattr(_db, '_get_conn'):
+                with _db._get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT credentials FROM platform_credentials WHERE platform = 'auto_sync' LIMIT 1")
+                        row = cur.fetchone()
+                        if row and row.get("credentials"):
+                            creds = row["credentials"] if isinstance(row["credentials"], dict) else _json.loads(row["credentials"])
+                            enabled = creds.get("enabled", False)
+                            interval = creds.get("interval_minutes", 120)
+        except Exception:
+            pass
+
     status: dict[str, Any] = {
         "enabled": enabled,
         "interval_minutes": interval,
@@ -932,9 +949,25 @@ async def api_toggle_autosync(request: Request):
     config["auto_sync"]["interval_minutes"] = interval
     save_config(config)
 
+    # Persist auto-sync state to DB on cloud deployments (filesystem is read-only)
+    if db.get_database_url():
+        try:
+            import json as _json
+            _db = db.get_db()
+            if hasattr(_db, '_get_conn'):
+                with _db._get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO platform_credentials (platform, auth_type, credentials, status)
+                            VALUES ('auto_sync', 'config', %s, 'active')
+                            ON CONFLICT (platform) DO UPDATE SET credentials = EXCLUDED.credentials
+                        """, (_json.dumps({"enabled": enabled, "interval_minutes": interval}),))
+                    conn.commit()
+        except Exception as e:
+            logger.warning("Failed to persist auto-sync state: %s", e)
+
     if enabled:
         if os.environ.get("VERCEL") and os.environ.get("GITHUB_PAT"):
-            # On Vercel: set up GitHub Actions for cron-based sync
             try:
                 result = await api_setup_actions(request)
                 logger.info("GitHub Actions auto-sync configured")
