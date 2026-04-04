@@ -1094,7 +1094,24 @@ async def api_sync_one(request: Request):
         with tempfile.TemporaryDirectory() as tmp:
             fit_path = f"{tmp}/{unsynced['id']}.fit"
             result = generate_fit(unsynced, hr_samples=None, output_path=fit_path)
-            upload_result = upload_fit(garmin_client, fit_path, workout_start=unsynced.get("start_time"))
+            try:
+                upload_result = upload_fit(garmin_client, fit_path, workout_start=unsynced.get("start_time"))
+            except Exception as upload_err:
+                err_str = str(upload_err)
+                if "412" in err_str or "409" in err_str or "Duplicate" in err_str.lower():
+                    # Duplicate activity — mark as synced and move on
+                    logger.info("Skipping duplicate: %s (%s)", unsynced["title"], unsynced["id"])
+                    db.mark_synced(
+                        hevy_id=unsynced["id"],
+                        garmin_activity_id=None,
+                        title=unsynced["title"],
+                        calories=result.get("calories"),
+                        avg_hr=result.get("avg_hr"),
+                    )
+                    remaining = hevy.get_workout_count() - db.get_synced_count()
+                    return JSONResponse({"synced": 1, "title": unsynced["title"] + " (already on Garmin)", "remaining": max(0, remaining), "done": remaining <= 0})
+                raise  # Re-raise non-duplicate errors
+
             aid = upload_result.get("activity_id")
             if aid:
                 rename_activity(garmin_client, aid, unsynced["title"])
