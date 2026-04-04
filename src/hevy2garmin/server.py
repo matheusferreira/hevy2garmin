@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,7 +39,7 @@ def _get_cat_names() -> dict[int, str]:
         39: "Elliptical", 41: "Indoor Bike", 42: "Indoor Row", 47: "Stair Machine",
         52: "Treadmill", 65534: "Unknown",
     }
-_jinja_env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)))
+_jinja_env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=True)
 
 
 def _render(template_name: str, **ctx) -> HTMLResponse:
@@ -471,7 +472,9 @@ async def garmin_callback(request: Request, ticket: str = ""):
         return RedirectResponse("/", status_code=303)
     except Exception as e:
         logger.warning("Garmin callback failed: %s", e)
-        return _render("garmin_redirect.html", error=str(e))
+        # Strip HTML from Garmin error responses
+        err = re.sub(r"<[^>]+>", "", str(e)).strip()[:200]
+        return _render("garmin_redirect.html", error=err or "Unknown error")
 
 
 @app.get("/workouts", response_class=HTMLResponse)
