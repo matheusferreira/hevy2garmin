@@ -58,6 +58,7 @@ _autosync_lock = threading.Lock()
 _last_sync_time: datetime | None = None
 _unmapped_cache: list[tuple[str, int]] | None = None
 _unmapped_cache_time: float = 0
+_failed_ids: set[str] = set()  # Workouts that failed upload this session (retried next session)
 
 
 def _get_unmapped_exercises() -> list[tuple[str, int]]:
@@ -1181,7 +1182,7 @@ async def api_sync_one(request: Request):
         if not workouts:
             break
         for w in workouts:
-            if not unsynced and not db.is_synced(w["id"]):
+            if not unsynced and not db.is_synced(w["id"]) and w["id"] not in _failed_ids:
                 unsynced = w
             # Track unmapped exercises while we're iterating
             from hevy2garmin.mapper import lookup_exercise
@@ -1240,15 +1241,12 @@ async def api_sync_one(request: Request):
                 "remaining": -1, "done": False
             }, status_code=500)
 
-        # Other upload errors — skip this workout and continue
-        db.mark_synced(
-            hevy_id=unsynced["id"],
-            garmin_activity_id=None,
-            title=unsynced["title"] + " [FAILED]",
-        )
-        remaining = hevy.get_workout_count() - db.get_synced_count()
-        logger.warning("Skipped failed workout %s, %d remaining", unsynced["title"], remaining)
-        return JSONResponse({"synced": 1, "skipped_error": True, "title": unsynced["title"], "remaining": max(0, remaining), "done": remaining <= 0})
+        # Other upload errors — skip this workout for now, don't mark as synced
+        # Track in-memory so we don't retry it in the same sync session
+        _failed_ids.add(unsynced["id"])
+        remaining = hevy.get_workout_count() - db.get_synced_count() - len(_failed_ids)
+        logger.warning("Skipping failed workout %s (will retry next session), %d remaining", unsynced["title"], remaining)
+        return JSONResponse({"synced": 0, "skipped_error": True, "title": unsynced["title"], "remaining": max(0, remaining), "done": remaining <= 0})
 
 
 
