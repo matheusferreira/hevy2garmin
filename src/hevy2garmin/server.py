@@ -385,6 +385,94 @@ async def setup_save(
     return RedirectResponse("/", status_code=303)
 
 
+# ── Browser-based Garmin auth (ticket exchange) ───────────────────────────
+
+@app.post("/api/garmin-ticket")
+async def garmin_ticket_exchange(request: Request):
+    """Exchange a Garmin SSO ticket for OAuth tokens.
+
+    The user logs into Garmin in their browser (residential IP), copies the
+    resulting URL which contains ?ticket=ST-XXXXX, and pastes it here.
+    We extract the ticket and exchange it for OAuth1+OAuth2 tokens server-side.
+    """
+    import json as _json
+    body = await request.json()
+    ticket = body.get("ticket", "").strip()
+    if not ticket:
+        return HTMLResponse('{"error":"No ticket provided"}', status_code=400)
+
+    try:
+        from garmin_auth.sso import CONSUMER_URL, _build_oauth1_header, exchange_oauth1
+        from urllib.parse import quote
+        import requests as req
+
+        # Fetch consumer credentials from S3
+        consumer = req.get(CONSUMER_URL).json()
+        consumer_key = consumer["consumer_key"]
+        consumer_secret = consumer["consumer_secret"]
+
+        # Exchange ticket for OAuth1 token
+        callback_url = "https://sso.garmin.com/sso/embed"
+        preauth_url = (
+            f"https://connectapi.garmin.com/oauth-service/oauth/preauthorized"
+            f"?ticket={quote(ticket)}"
+            f"&login-url={quote(callback_url)}"
+            f"&accepts-mfa-tokens=true"
+        )
+        preauth_header = _build_oauth1_header(
+            "GET", preauth_url, consumer_key, consumer_secret
+        )
+        preauth_resp = req.get(
+            preauth_url,
+            headers={
+                "Authorization": preauth_header,
+                "User-Agent": "com.garmin.android.apps.connectmobile",
+            },
+        )
+        if not preauth_resp.ok:
+            return HTMLResponse(
+                _json.dumps({"error": f"Ticket exchange failed ({preauth_resp.status_code})"}),
+                status_code=400,
+            )
+
+        from urllib.parse import parse_qs
+        preauth_data = parse_qs(preauth_resp.text)
+        oauth1 = {
+            "oauth_token": preauth_data.get("oauth_token", [""])[0],
+            "oauth_token_secret": preauth_data.get("oauth_token_secret", [""])[0],
+            "domain": "garmin.com",
+        }
+        if not oauth1["oauth_token"]:
+            return HTMLResponse(
+                _json.dumps({"error": "No OAuth1 token received — ticket may have expired. Try again."}),
+                status_code=400,
+            )
+
+        # Exchange OAuth1 → OAuth2
+        oauth2 = exchange_oauth1(oauth1, consumer_key, consumer_secret)
+
+        # Store tokens
+        tokens = {"oauth1_token.json": oauth1, "oauth2_token.json": oauth2}
+        database_url = db.get_database_url()
+        if database_url:
+            from garmin_auth.storage import DBTokenStore
+            store = DBTokenStore(database_url)
+            store.save(tokens)
+        else:
+            from garmin_auth.storage import FileTokenStore
+            store = FileTokenStore()
+            store.save(tokens)
+
+        logger.info("Garmin ticket exchange completed successfully")
+        return HTMLResponse(_json.dumps({"ok": True}))
+    except Exception as e:
+        logger.warning("Garmin ticket exchange failed: %s", e)
+        return HTMLResponse(
+            _json.dumps({"error": str(e)[:200]}),
+            status_code=500,
+        )
+
+
 @app.get("/workouts", response_class=HTMLResponse)
 async def workouts_page(request: Request):
     config = load_config()
