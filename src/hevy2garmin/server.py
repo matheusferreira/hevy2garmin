@@ -978,6 +978,22 @@ async def api_toggle_autosync(request: Request):
         logger.info("Auto-sync enabled: every %d min", interval)
     else:
         _stop_autosync()
+        # On Vercel: delete the sync workflow to stop the cron
+        if os.environ.get("VERCEL") and os.environ.get("GITHUB_PAT"):
+            try:
+                import requests as req
+                pat = os.environ.get("GITHUB_PAT")
+                owner = os.environ.get("VERCEL_GIT_REPO_OWNER")
+                repo_name = os.environ.get("VERCEL_GIT_REPO_SLUG")
+                gh_headers = {"Authorization": f"Bearer {pat}", "Accept": "application/vnd.github+json"}
+                wf = req.get(f"https://api.github.com/repos/{owner}/{repo_name}/contents/.github/workflows/sync.yml",
+                             headers=gh_headers, timeout=10)
+                if wf.status_code == 200:
+                    req.delete(f"https://api.github.com/repos/{owner}/{repo_name}/contents/.github/workflows/sync.yml",
+                               headers=gh_headers, json={"message": "disable auto-sync", "sha": wf.json()["sha"]}, timeout=10)
+                    logger.info("Deleted sync workflow from %s/%s", owner, repo_name)
+            except Exception as e:
+                logger.warning("Failed to delete sync workflow: %s", e)
         logger.info("Auto-sync disabled")
 
     auto_sync = _get_autosync_status()
