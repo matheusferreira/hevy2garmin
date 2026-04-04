@@ -343,12 +343,7 @@ async def setup_save(
         except Exception as e:
             logger.warning("Failed to persist credentials to DB: %s", e)
 
-    # On cloud deployments, skip server-side Garmin auth (captcha issues from
-    # cloud IPs). Show transition page then redirect to browser-based auth.
-    if db.get_database_url():
-        return _render("garmin_redirect.html", action="login")
-
-    # Local: try server-side Garmin auth
+    # Try server-side Garmin auth
     garmin_pw = garmin_password or os.environ.get("GARMIN_PASSWORD", "")
     garmin_em = garmin_email or config.get("garmin_email", "")
 
