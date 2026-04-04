@@ -41,3 +41,4 @@ fit_output/
 # SQLite DB
 *.db
 *.sqlite
+worker/.wrangler/
